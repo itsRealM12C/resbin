@@ -3,28 +3,101 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BR28 Frame Extractor (beta)</title>
+    <title>RES.BIN Extractor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js"></script>
     <style>
-        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f0f0f; color: #f0f0f0; padding: 20px; }
         .container { max-width: 1000px; margin: auto; text-align: center; }
-        .controls { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
-        #frame-container { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
-        canvas { border: 1px solid #444; background: #000; cursor: pointer; }
-        .frame-card { background: #252525; padding: 5px; border-radius: 4px; }
-        .frame-label { font-size: 12px; margin-top: 5px; color: #888; }
-        button { background: #cf6679; border: none; color: white; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #b05a69; }
-        input[type="file"] { margin-bottom: 15px; }
+        
+        .controls { 
+            background: #1a1a1a; 
+            padding: 30px; 
+            border-radius: 16px; 
+            margin-bottom: 30px; 
+            border: 1px solid #333;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        /* Modernized Buttons */
+        button { 
+            border: none; 
+            color: #fff; 
+            padding: 14px 28px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            margin: 8px; 
+            font-size: 15px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+
+        #downloadAll {
+            background: linear-gradient(135deg, #00b4db, #0083b0);
+        }
+
+        #gifButton {
+            background: linear-gradient(135deg, #8e2de2, #4a00e0);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 7px 14px rgba(0,0,0,0.3);
+            filter: brightness(1.1);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #444 !important;
+            color: #888;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Pulsing Loader */
+        .progress-wrapper { width: 100%; max-width: 400px; margin: 25px auto; display: none; }
+        .progress-bar { width: 100%; background-color: #222; border-radius: 20px; overflow: hidden; height: 6px; position: relative; }
+        .progress-pulse { 
+            width: 45%; height: 100%; background: #bb86fc; 
+            position: absolute; left: -45%;
+            animation: pulse 1.2s infinite ease-in-out;
+            box-shadow: 0 0 10px #bb86fc;
+        }
+        @keyframes pulse {
+            0% { left: -45%; }
+            100% { left: 100%; }
+        }
+
+        #frame-container { display: flex; flex-wrap: wrap; gap: 15px; justify-content: center; }
+        canvas { border: 1px solid #333; background: #000; cursor: pointer; border-radius: 8px; width: 152px; height: 120px; }
+        .frame-card { background: #1e1e1e; padding: 12px; border-radius: 12px; border: 1px solid #333; }
+        .frame-label { font-size: 11px; margin-top: 10px; color: #777; font-weight: bold; }
+        
+        input[type="file"] { margin-bottom: 25px; color: #888; font-size: 14px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>RES.BIN Extractor</h2>
+    <h1 style="font-weight: 300; letter-spacing: 2px;">RES.BIN EXTRACTOR</h1>
     <div class="controls">
         <input type="file" id="fileInput" accept=".bin">
         <br>
-        <button id="downloadAll">Download All as JPG</button>
+        <button id="downloadAll">Export All JPGs</button>
+        <button id="gifButton">Export GIF</button>
+        
+        <div class="progress-wrapper" id="progressWrapper">
+            <div class="progress-bar">
+                <div class="progress-pulse"></div>
+            </div>
+            <p style="color:#bb86fc; font-size: 13px; margin-top: 10px; font-weight: bold;">ACCELERATING EXPORT...</p>
+        </div>
     </div>
     <div id="frame-container"></div>
 </div>
@@ -35,6 +108,7 @@
     const RECORD_SIZE = 28;
     const HEADER_OFFSET = 0x10;
     const TOTAL_FRAMES = 51;
+    let frameCanvases = [];
 
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -43,29 +117,24 @@
         const buffer = await file.arrayBuffer();
         const data = new Uint8Array(buffer);
         const container = document.getElementById('frame-container');
-        container.innerHTML = ''; // Clear previous
+        container.innerHTML = ''; 
+        frameCanvases = [];
+
+        const view = new DataView(buffer);
 
         for (let fi = 0; fi < TOTAL_FRAMES; fi++) {
             const off = HEADER_OFFSET + (fi * RECORD_SIZE);
+            if (off + 20 > data.length) break;
             
-            // Extract foff and fsz (Little Endian Uint32)
-            const view = new DataView(buffer);
             const foff = view.getUint32(off + 12, true);
             const fsz = view.getUint32(off + 16, true);
-
-            if (foff + fsz > data.length) break;
+            if (foff + fsz > data.length) continue;
 
             const fdata = data.slice(foff, foff + fsz);
-            
-            // Build Palette (1024 bytes)
             const palette = [];
             for (let i = 0; i < 256; i++) {
                 const pOff = i * 4;
-                palette.push({
-                    r: fdata[pOff + 1],
-                    g: fdata[pOff + 2],
-                    b: fdata[pOff + 3]
-                });
+                palette.push({ r: fdata[pOff+1], g: fdata[pOff+2], b: fdata[pOff+3] });
             }
 
             const rawPixels = fdata.slice(1024);
@@ -75,7 +144,6 @@
 
     function renderFrame(index, palette, raw) {
         const container = document.getElementById('frame-container');
-        
         const card = document.createElement('div');
         card.className = 'frame-card';
 
@@ -89,49 +157,67 @@
             for (let x = 0; x < WIDTH; x++) {
                 const pixelIdx = (y * WIDTH + x);
                 const outIdx = pixelIdx * 4;
-                
-                let color = { r: 0, g: 0, b: 0 };
-                if (pixelIdx < raw.length) {
-                    const palIdx = raw[pixelIdx];
-                    color = palette[palIdx];
-                }
-
+                let color = (pixelIdx < raw.length) ? palette[raw[pixelIdx]] : palette[0];
                 imageData.data[outIdx] = color.r;
-                imageData.data[outIdx + 1] = color.g;
-                imageData.data[outIdx + 2] = color.b;
-                imageData.data[outIdx + 3] = 255; // Alpha
+                imageData.data[outIdx+1] = color.g;
+                imageData.data[outIdx+2] = color.b;
+                imageData.data[outIdx+3] = 255;
             }
         }
-
         ctx.putImageData(imageData, 0, 0);
+        frameCanvases.push(canvas);
         
+        card.appendChild(canvas);
         const label = document.createElement('div');
         label.className = 'frame-label';
-        label.innerText = `Frame ${index + 1}`;
-
-        card.appendChild(canvas);
+        label.innerText = `FRAME ${index + 1}`;
         card.appendChild(label);
         container.appendChild(card);
-
-        // Click individual frame to download as JPG
-        canvas.onclick = () => {
-            const link = document.createElement('a');
-            link.download = `frame_${index + 1}.jpg`;
-            link.href = canvas.toDataURL('image/jpeg', 0.9);
-            link.click();
-        };
     }
 
     document.getElementById('downloadAll').onclick = () => {
-        const canvases = document.querySelectorAll('canvas');
-        canvases.forEach((canvas, i) => {
+        frameCanvases.forEach((canvas, i) => {
             setTimeout(() => {
                 const link = document.createElement('a');
                 link.download = `frame_${i + 1}.jpg`;
-                link.href = canvas.toDataURL('image/jpeg', 0.9);
+                link.href = canvas.toDataURL('image/jpeg', 0.8);
                 link.click();
-            }, i * 200); // Staggered to prevent browser hang
+            }, i * 100);
         });
+    };
+
+    document.getElementById('gifButton').onclick = () => {
+        if (frameCanvases.length === 0) return;
+        
+        const wrapper = document.getElementById('progressWrapper');
+        const btn = document.getElementById('gifButton');
+
+        wrapper.style.display = 'block';
+        btn.disabled = true;
+
+        // SPEED OPTIMIZATIONS:
+        // quality: 20 (Higher = Faster encoding, slightly less color accuracy)
+        // dither: false (Speeds up processing significantly)
+        const gif = new GIF({
+            quality: 20, 
+            width: WIDTH,
+            height: HEIGHT,
+            dither: false
+        });
+
+        frameCanvases.forEach(canvas => gif.addFrame(canvas, {delay: 100}));
+
+        gif.on('finished', (blob) => {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = "animation.gif";
+            link.click();
+            
+            btn.disabled = false;
+            wrapper.style.display = 'none';
+        });
+
+        gif.render();
     };
 </script>
 
