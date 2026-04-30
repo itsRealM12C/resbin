@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BR28 Frame Extractor (beta)</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 1000px; margin: auto; text-align: center; }
+        .controls { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
+        #frame-container { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+        canvas { border: 1px solid #444; background: #000; cursor: pointer; }
+        .frame-card { background: #252525; padding: 5px; border-radius: 4px; }
+        .frame-label { font-size: 12px; margin-top: 5px; color: #888; }
+        button { background: #cf6679; border: none; color: white; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #b05a69; }
+        input[type="file"] { margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>RES.BIN / BR28 Visualizer</h2>
+    <div class="controls">
+        <input type="file" id="fileInput" accept=".bin">
+        <br>
+        <button id="downloadAll">Download All as JPG</button>
+    </div>
+    <div id="frame-container"></div>
+</div>
+
+<script>
+    const WIDTH = 304;
+    const HEIGHT = 240;
+    const RECORD_SIZE = 28;
+    const HEADER_OFFSET = 0x10;
+    const TOTAL_FRAMES = 51;
+
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const buffer = await file.arrayBuffer();
+        const data = new Uint8Array(buffer);
+        const container = document.getElementById('frame-container');
+        container.innerHTML = ''; // Clear previous
+
+        for (let fi = 0; fi < TOTAL_FRAMES; fi++) {
+            const off = HEADER_OFFSET + (fi * RECORD_SIZE);
+            
+            // Extract foff and fsz (Little Endian Uint32)
+            const view = new DataView(buffer);
+            const foff = view.getUint32(off + 12, true);
+            const fsz = view.getUint32(off + 16, true);
+
+            if (foff + fsz > data.length) break;
+
+            const fdata = data.slice(foff, foff + fsz);
+            
+            // Build Palette (1024 bytes)
+            const palette = [];
+            for (let i = 0; i < 256; i++) {
+                const pOff = i * 4;
+                palette.push({
+                    r: fdata[pOff + 1],
+                    g: fdata[pOff + 2],
+                    b: fdata[pOff + 3]
+                });
+            }
+
+            const rawPixels = fdata.slice(1024);
+            renderFrame(fi, palette, rawPixels);
+        }
+    });
+
+    function renderFrame(index, palette, raw) {
+        const container = document.getElementById('frame-container');
+        
+        const card = document.createElement('div');
+        card.className = 'frame-card';
+
+        const canvas = document.createElement('canvas');
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(WIDTH, HEIGHT);
+
+        for (let y = 0; y < HEIGHT; y++) {
+            for (let x = 0; x < WIDTH; x++) {
+                const pixelIdx = (y * WIDTH + x);
+                const outIdx = pixelIdx * 4;
+                
+                let color = { r: 0, g: 0, b: 0 };
+                if (pixelIdx < raw.length) {
+                    const palIdx = raw[pixelIdx];
+                    color = palette[palIdx];
+                }
+
+                imageData.data[outIdx] = color.r;
+                imageData.data[outIdx + 1] = color.g;
+                imageData.data[outIdx + 2] = color.b;
+                imageData.data[outIdx + 3] = 255; // Alpha
+            }
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        
+        const label = document.createElement('div');
+        label.className = 'frame-label';
+        label.innerText = `Frame ${index + 1}`;
+
+        card.appendChild(canvas);
+        card.appendChild(label);
+        container.appendChild(card);
+
+        // Click individual frame to download as JPG
+        canvas.onclick = () => {
+            const link = document.createElement('a');
+            link.download = `frame_${index + 1}.jpg`;
+            link.href = canvas.toDataURL('image/jpeg', 0.9);
+            link.click();
+        };
+    }
+
+    document.getElementById('downloadAll').onclick = () => {
+        const canvases = document.querySelectorAll('canvas');
+        canvases.forEach((canvas, i) => {
+            setTimeout(() => {
+                const link = document.createElement('a');
+                link.download = `frame_${i + 1}.jpg`;
+                link.href = canvas.toDataURL('image/jpeg', 0.9);
+                link.click();
+            }, i * 200); // Staggered to prevent browser hang
+        });
+    };
+</script>
+
+</body>
+</html>
