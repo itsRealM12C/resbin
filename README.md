@@ -8,124 +8,92 @@ didn't wanted to waste my storage with these.
 
 ---
 
-## Format background
+## "1.00" — keyframe/delta boot animation
 
-`res.bin` is a **flat frame-table + palette-indexed bitmap** container —
-structurally the closest comparison is GIF (palette-indexed frames), not a
-transform-coded video format. There's no compression on the pixel data
-itself; each frame is a fixed-size palette lookup table followed by raw
-8-bit indexed pixels, one byte per pixel, no RLE/LZW packing at all. That's
-the "similar to GIF" comparison: same *palette-indexed* idea, but even
-simpler — GIF at least LZW-compresses the indexed data, this doesn't.
+Verified against `res.bin` (3,099,664 bytes, `/POWER/` resource):
+296×240 canvas, 54 frames, all decoded as keyframes.
 
-### Frame table
+This is a multi-frame animation container: same per-row RLE idea as
+BR02, but pixels are **palette indices** (1 byte each) instead of
+3-byte ARGB8565, and frames can be full keyframes or deltas against
+the last keyframe.
+
+### Header (16 bytes)
+
+| Offset | Type | Field |
+|--------|------|-------|
+| 0x00 | char[4] | magic `"1.00"` |
+| 0x04 | u16 | canvas width |
+| 0x06 | u16 | canvas height |
+| 0x08 | u16 | frame count |
+| 0x0A | u16 | default delay (ms) |
+| 0x0C | u32 | reserved |
+
+### Frame record (28 bytes each, array starts at 0x10)
+
+| Offset | Type | Field |
+|--------|------|-------|
+| +0x00 | u16 | frame width |
+| +0x02 | u16 | frame height |
+| +0x04 | u16 | frame number |
+| +0x06 | u16 | flags |
+| +0x08 | u32 | metadata — **type = `(meta >> 16) & 0xFF`** |
+| +0x0C | u32 | payload offset (absolute, from file start) |
+| +0x10 | u32 | payload length |
+| +0x14 | u32 | decoded byte count |
+| +0x18 | u32 | reserved |
+
+### Frame types
+
+| Type | Name | Meaning |
+|------|------|---------|
+| 0x0B | KEY | full keyframe; own 1024-byte palette |
+| 0x0F | dF  | delta frame; own 1024-byte palette |
+| 0x0E | dE  | delta frame; reuses last keyframe's palette |
+
+### Frame payload layout
+
+- **KEY / dF**: bytes `[0x000, 0x400)` = 1024-byte palette (256 × 4-byte
+  BGRA entries), row table starts at `0x400`.
+- **dE**: no palette block; row table starts at `0x000`.
+
+Row table format is the same packed-u32 scheme as BR02 (21-bit offset
+relative to the row table's own base + 11-bit length), but each row's
+RLE stream decodes to **1-byte palette indices**, not 3-byte pixels.
+
+### Row RLE (palette-index variant)
+
+- high bit set → repeat run: `count = low 7 bits`, followed by **one
+  index byte**, repeated `count` times.
+- high bit clear → literal run: `count` raw index bytes follow.
+
+### Compositing
+
+- A keyframe (0x0B) starts from a blank `width × height` indexed
+  buffer.
+- A delta frame (0x0E / 0x0F) starts from a **copy of the most recent
+  keyframe's** indexed buffer — never the previous delta.
+- Within a delta row, an index value of **0xFF means "unchanged"**:
+  skip writing that pixel, leaving the keyframe's value in place.
+- A frame smaller than the canvas is **right-aligned**:
+  `x_offset = canvas_width - frame_width`, `y_offset = 0`.
+
+### Rendering a frame
 
 ```
-offset 0x00        : (unidentified, 0x10 bytes — not parsed by this tool)
-offset 0x10        : frame table start (HEADER_OFFSET)
-
-each frame table record is 28 bytes (RECORD_SIZE):
-  +0x00  12 bytes   unidentified (not read by this tool — likely
-                     timing/flags/name/reserved fields)
-  +0x0C   4 bytes   frame data offset   (u32 LE, absolute file offset)
-  +0x10   4 bytes   frame data size     (u32 LE, bytes)
-  +0x14   8 bytes   (unread — record is 28 bytes total, only 20 are consumed)
-
-51 records read sequentially from 0x10, i.e. records occupy
-0x10 .. 0x10 + 51*28 = 0x10 .. 0x596
+rgba[i].a = palette[index*4 + 0]
+rgba[i].r = palette[index*4 + 1]
+rgba[i].g = palette[index*4 + 2]
+rgba[i].b = palette[index*4 + 3]
 ```
 
-The table is walked positionally (`fi * 28` from `0x10`) rather than via any
-in-file count field — `51` is a constant baked into the extractor from
-observation of the sample files, not read from a header field. Worth
-double-checking against new dumps in case some CuBuds variants ship a
-different frame count.
+(Palette entries are stored **A, R, G, B** in that byte order.)
 
-### Frame data (at each record's offset/size)
+### Verified stats
 
-```
-+0x000            palette: 256 entries × 4 bytes = 1024 bytes total
-                     each entry: [ unused, R, G, B ]  (byte 0 of each
-                     4-byte entry is skipped/ignored — possibly an alpha
-                     or index-echo byte, not used for color)
-+0x400 (1024)     raw pixel data: 296 × 240 = 71,040 bytes,
-                     1 byte per pixel = palette index (0-255), row-major,
-                     no padding/stride between rows
-```
-
-Fixed frame dimensions (`296×240`) are hardcoded in the extractor rather
-than read from any per-frame field — every frame in the observed samples is
-this exact resolution, consistent with this being a small onboard display
-(charging-case/earbuds status screen) rather than a general video format.
-
-### Why "similar to GIF, but simpler"
-
-- **Shared idea**: both are palette-indexed — a small color table (≤256
-  entries) plus a per-pixel index into it, rather than storing full RGB per
-  pixel. This is the classic space-saving trick for small embedded/LCD
-  displays with limited color depth and limited flash storage.
-- **Difference**: GIF's indexed pixel stream is LZW-compressed and frames
-  can be sub-regions with disposal methods, transparency, interlacing, etc.
-  `res.bin` has none of that — every frame is a full, uncompressed
-  296×240 index buffer at a fixed offset/size the frame table already
-  tells you, which is why extraction here is a straight `slice()` + palette
-  lookup with no decompression step at all.
+- `res.bin`: 296×240 canvas, 54 frames, all type 0x0B (KEY) — this
+  particular boot animation doesn't use delta frames, so it's really
+  54 independent full images played back at the header's default
+  delay (70 ms here).
 
 ---
-
-## Extraction pipeline
-
-```
-res.bin file
-   │  <input type="file"> select
-   ▼
-ArrayBuffer → Uint8Array + DataView
-   │
-   for fi in 0..51:
-     read record at 0x10 + fi*28
-     frame_offset = u32LE @ record+0x0C
-     frame_size   = u32LE @ record+0x10
-     frame_bytes  = data.slice(frame_offset, frame_offset+frame_size)
-     palette      = frame_bytes[0..1024), take bytes [1,2,3] of every 4 → RGB
-     pixels       = frame_bytes[1024..)   (296×240 indices)
-   │
-   ▼
-per frame: build ImageData by palette[pixels[i]] → RGBA, draw to <canvas>
-   │
-   ├─▶ Export All JPGs — canvas.toDataURL('image/jpeg', 0.8) per frame,
-   │                      staggered download (100ms apart) to avoid the
-   │                      browser blocking rapid multi-file downloads
-   │
-   └─▶ Export GIF — gif.js (CDN, cdnjs), quality:20 + dither:false for
-                     fast encoding over accuracy, 100ms per-frame delay
-                     → re-encodes the raw frames into an actual
-                       (now LZW-compressed) animated GIF
-```
-
-The GIF export is genuinely re-encoding here — `res.bin`'s own frames
-aren't GIF-compatible data, they're raw indexed buffers, so `gif.js` is
-doing real work (palette quantization/LZW) rather than just repackaging
-bytes, unlike some container-extraction tools where "export as X" is closer
-to a raw byte copy.
-
-## Files
-
-| File          | Purpose |
-|---------------|---------|
-| `index.html`  | The tool: frame-table walk, palette+pixel decode, canvas render, JPG/GIF export. Single file; depends on `gif.js` from cdnjs for the GIF export path only. |
-
-## Known gaps / things to revisit
-
-- The 12 unread bytes at the start of each frame-table record and the 8
-  unread trailing bytes are unidentified — likely candidates: per-frame
-  duration/timing, a name/tag string, or flags, based on position and
-  size, but not confirmed.
-- The first byte of each 4-byte palette entry is discarded without a
-  confirmed reason (assumed non-color/padding/alpha).
-- `51` frames and `296×240` are hardcoded constants from the observed
-  samples, not read from any in-file count/dimension field — a file with a
-  different frame count or resolution would need those constants adjusted
-  manually.
-- Only 4 `res.bin` samples have been examined so far, per the Origins note
-  above — constants above should be treated as "true for this device family
-  so far," not as a confirmed spec.
