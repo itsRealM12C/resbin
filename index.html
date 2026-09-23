@@ -36,7 +36,6 @@ html,body{
 button,input,select,label{-webkit-tap-highlight-color:rgba(255,255,255,0);font:inherit;color:inherit}
 button{border:0;background:none;cursor:pointer}
 
-/* Fullscreen app shell: header, content (scrolls), fixed footer feel via layout */
 .app{
   height:100%;
   display:flex; flex-direction:column;
@@ -78,7 +77,6 @@ main{
 .drop b{font-size:13px}
 .drop .sub{margin-top:2px}
 
-/* Preview: intentionally SMALL and fixed, never scales up to fill the panel */
 .stage{
   display:flex; justify-content:center; align-items:center;
   background:var(--panel-2); border-radius:10px; padding:10px;
@@ -103,7 +101,6 @@ main{
 .stat b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 .stat span{display:block;margin-top:1px;color:var(--muted);font-size:10.5px}
 
-/* Media / transport controls */
 .media-top{display:flex;align-items:center;gap:8px}
 .media-buttons{display:flex;align-items:center;gap:4px}
 .media-btn{
@@ -117,6 +114,7 @@ main{
 .media-btn svg{width:17px;height:17px;fill:currentColor}
 .media-btn.primary svg{width:19px;height:19px}
 .media-btn:disabled{opacity:.35;cursor:not-allowed}
+
 .media-time{margin-left:auto;white-space:nowrap;color:var(--muted-2);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 
 .timeline{width:100%;height:20px;appearance:none;-webkit-appearance:none;background:transparent;cursor:pointer;margin:6px 0 0}
@@ -135,7 +133,6 @@ main{
 .spacer{flex:1}
 .frame-info{color:var(--muted-2);font:11px ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* Frame filmstrip: real thumbnails, not numbered buttons */
 .frames-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .frames-head b{font-size:12px}
 .frames-head span{font-size:11px;color:var(--muted)}
@@ -161,7 +158,6 @@ details.log-details summary{cursor:pointer;font-size:12px;color:var(--muted);use
 .ok{color:var(--ok)}
 .warn{color:var(--warn)}
 
-/* True fullscreen mode via the Fullscreen API */
 .app:fullscreen, .app:-webkit-full-screen{background:var(--bg)}
 </style>
 </head>
@@ -244,7 +240,10 @@ details.log-details summary{cursor:pointer;font-size:12px;color:var(--muted);use
       </button>
       <div class="spacer"></div>
       <div class="frame-info" id="frameLabel">No file loaded</div>
-      <button class="media-btn" id="png" title="Export current frame as PNG" aria-label="Export current frame as PNG">
+      <button class="media-btn" id="gif" title="Save animation as GIF" aria-label="Save animation as GIF">
+        <svg viewBox="0 0 24 24"><path d="M3 5h18v14H3V5zm2 2v2h2V7H5zm0 4v2h2v-2H5zm0 4v2h2v-2H5zm12-8v2h2V7h-2zm0 4v2h2v-2h-2zm0 4v2h2v-2h-2zM9 7h6v10H9V7z"/></svg>
+      </button>
+      <button class="media-btn" id="png" title="Save current frame as PNG" aria-label="Save current frame as PNG">
         <svg viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v2h14v-2"/></svg>
       </button>
     </div>
@@ -269,42 +268,6 @@ details.log-details summary{cursor:pointer;font-size:12px;color:var(--muted);use
 
 <script>
 "use strict";
-
-/*
-  JIELI 1.00 RESOURCE FORMAT
-
-  Header:
-    00 char[4]  "1.00"
-    04 u16      width
-    06 u16      height
-    08 u16      frame count
-    0A u16      delay
-    0C u32      reserved
-
-  Frame record = 28 bytes:
-
-    +00 u16 frame width
-    +02 u16 frame height
-    +04 u16 frame number
-    +06 u16 flags
-    +08 u32 metadata
-    +0C u32 payload offset
-    +10 u32 payload length
-    +14 u32 decoded byte count
-    +18 u32 reserved
-
-  Types:
-    0x0B = KEY
-    0x0F = delta + palette
-    0x0E = delta without palette
-
-  Delta frames are relative to the
-  most recent KEY frame.
-
-  Delta 0xFF = unchanged.
-
-  Smaller delta rectangles are right aligned.
-*/
 
 const FRAME_BASE = 0x10;
 const FRAME_SIZE = 28;
@@ -472,11 +435,6 @@ function decodeFrame(bytes,rec,baseCanvas,basePalette){
     palette = new Uint8Array(basePalette);
   }
 
-  /*
-    IMPORTANT:
-    Deltas are based on the MOST RECENT KEYFRAME,
-    never the previous delta.
-  */
   let indexed;
   if(isKey){
     indexed = new Uint8Array(resource.width * resource.height);
@@ -556,6 +514,138 @@ function indexedToImage(frame){
   return new ImageData(rgba, w, h);
 }
 
+/* ---------------- GIF encoder ---------------- */
+
+function lzwEncode(pixels, minCodeSize){
+  const clearCode = 1 << minCodeSize;
+  const endCode = clearCode + 1;
+  let codeSize = minCodeSize + 1;
+  let nextCode = endCode + 1;
+
+  const dict = new Map();
+  for(let i = 0; i < clearCode; i++){
+    dict.set(String.fromCharCode(i), i);
+  }
+
+  const out = [];
+  let bitBuf = 0, bitCnt = 0;
+
+  function emit(code){
+    bitBuf |= (code << bitCnt);
+    bitCnt += codeSize;
+    while(bitCnt >= 8){
+      out.push(bitBuf & 0xFF);
+      bitBuf >>>= 8;
+      bitCnt -= 8;
+    }
+  }
+
+  function resetDict(){
+    dict.clear();
+    for(let i = 0; i < clearCode; i++){
+      dict.set(String.fromCharCode(i), i);
+    }
+    codeSize = minCodeSize + 1;
+    nextCode = endCode + 1;
+  }
+
+  emit(clearCode);
+  let w = String.fromCharCode(pixels[0]);
+
+  for(let i = 1; i < pixels.length; i++){
+    const c = pixels[i];
+    const wc = w + String.fromCharCode(c);
+    if(dict.has(wc)){
+      w = wc;
+    }else{
+      emit(dict.get(w));
+      dict.set(wc, nextCode);
+      nextCode++;
+      if(nextCode === (1 << codeSize) && codeSize < 12){
+        codeSize++;
+      }else if(nextCode === 4095){
+        emit(clearCode);
+        resetDict();
+      }
+      w = String.fromCharCode(c);
+    }
+  }
+
+  emit(dict.get(w));
+  emit(endCode);
+
+  if(bitCnt > 0){
+    out.push(bitBuf & 0xFF);
+  }
+
+  return out;
+}
+
+function encodeGIF(frames, width, height, defaultDelay){
+  const out = [];
+
+  /* GIF89a header */
+  out.push(0x47, 0x49, 0x46, 0x38, 0x39, 0x61);
+
+  /* Logical Screen Descriptor */
+  out.push(width & 0xFF, (width >> 8) & 0xFF);
+  out.push(height & 0xFF, (height >> 8) & 0xFF);
+  /* packed: no GCT, color res=7, sort=0, GCT size=0 */
+  out.push(0x70, 0x00, 0x00);
+
+  /* NETSCAPE2.0 Application Extension — loop forever */
+  out.push(0x21, 0xFF, 0x0B);
+  out.push(0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2E, 0x30);
+  out.push(0x03, 0x01, 0x00, 0x00);
+
+  const minCodeSize = 8;
+
+  for(const frame of frames){
+    const palette = frame.palette;
+    const indexed = frame.indexed;
+    const delay = Math.max(2, Math.round((frame.delay || defaultDelay || 100) / 10));
+
+    /* Graphic Control Extension: disposal=1 (do not dispose), no transparency */
+    out.push(0x21, 0xF9, 0x04);
+    out.push(0x04, delay & 0xFF, (delay >> 8) & 0xFF, 0x00);
+
+    /* Image Descriptor */
+    out.push(0x2C);
+    out.push(0x00, 0x00, 0x00, 0x00);
+    out.push(width & 0xFF, (width >> 8) & 0xFF);
+    out.push(height & 0xFF, (height >> 8) & 0xFF);
+    /* packed: LCT flag=1, interlace=0, sort=0, LCT size=7 (256 colors) */
+    out.push(0x87);
+
+    /* Local Color Table — 256 RGB entries (palette is [A,R,G,B] per entry) */
+    for(let i = 0; i < 256; i++){
+      const p = i * 4;
+      out.push(palette[p+1], palette[p+2], palette[p+3]);
+    }
+
+    /* LZW minimum code size byte */
+    out.push(minCodeSize);
+
+    /* LZW compressed data as sub-blocks (max 255 bytes each) */
+    const lzw = lzwEncode(indexed, minCodeSize);
+    let pos = 0;
+    while(pos < lzw.length){
+      const chunk = Math.min(255, lzw.length - pos);
+      out.push(chunk);
+      for(let i = 0; i < chunk; i++){
+        out.push(lzw[pos + i]);
+      }
+      pos += chunk;
+    }
+    out.push(0x00);
+  }
+
+  /* GIF trailer */
+  out.push(0x3B);
+
+  return new Uint8Array(out);
+}
+
 /* ---------------- UI layer ---------------- */
 
 function render(index){
@@ -597,8 +687,6 @@ function buildFrameThumbnails(){
     thumbCanvas.height = th;
     const tctx = thumbCanvas.getContext("2d");
 
-    // Render the full decoded frame off-screen at native size, then
-    // scale it down into the small thumbnail canvas.
     const full = document.createElement("canvas");
     full.width = resource.width;
     full.height = resource.height;
@@ -715,67 +803,67 @@ function startPlayback(){
   tick();
 }
 
-$("drop").onclick = ()=>{ $("file").click(); };
+ $("drop").onclick = ()=>{ $("file").click(); };
 
-$("file").onchange = event=>{
+ $("file").onchange = event=>{
   const file = event.target.files?.[0];
   if(file) loadFile(file);
 };
 
-$("drop").ondragover = event=>{
+ $("drop").ondragover = event=>{
   event.preventDefault();
   $("drop").classList.add("drag");
 };
 
-$("drop").ondragleave = ()=>{ $("drop").classList.remove("drag"); };
+ $("drop").ondragleave = ()=>{ $("drop").classList.remove("drag"); };
 
-$("drop").ondrop = event=>{
+ $("drop").ondrop = event=>{
   event.preventDefault();
   $("drop").classList.remove("drag");
   const file = event.dataTransfer.files?.[0];
   if(file) loadFile(file);
 };
 
-$("play").onclick = ()=>{
+ $("play").onclick = ()=>{
   if(playing) stopPlayback();
   else startPlayback();
 };
 
-$("first").onclick = ()=>{
+ $("first").onclick = ()=>{
   stopPlayback();
   if(decodedFrames.length) render(0);
 };
 
-$("last").onclick = ()=>{
+ $("last").onclick = ()=>{
   stopPlayback();
   if(decodedFrames.length) render(decodedFrames.length-1);
 };
 
-$("prev").onclick = ()=>{
+ $("prev").onclick = ()=>{
   stopPlayback();
   if(!decodedFrames.length) return;
   render((currentFrame - 1 + decodedFrames.length) % decodedFrames.length);
 };
 
-$("next").onclick = ()=>{
+ $("next").onclick = ()=>{
   stopPlayback();
   if(!decodedFrames.length) return;
   render((currentFrame+1) % decodedFrames.length);
 };
 
-$("slider").oninput = event=>{
+ $("slider").oninput = event=>{
   stopPlayback();
   render(Number(event.target.value));
 };
 
-$("loop").onclick = ()=>{
+ $("loop").onclick = ()=>{
   const el = $("loop");
   const active = !el.classList.contains("active");
   el.classList.toggle("active", active);
   el.setAttribute("aria-pressed", String(active));
 };
 
-$("png").onclick = ()=>{
+ $("png").onclick = ()=>{
   if(!decodedFrames.length) return;
   canvas.toBlob(blob=>{
     if(!blob) return;
@@ -790,7 +878,33 @@ $("png").onclick = ()=>{
   }, "image/png");
 };
 
-/* Keyboard shortcuts: space = play/pause, arrows = step frames */
+ $("gif").onclick = ()=>{
+  if(!decodedFrames.length) return;
+  const btn = $("gif");
+  if(btn.disabled) return;
+  btn.disabled = true;
+  log(`Encoding ${decodedFrames.length} frames as GIF…`);
+  setTimeout(()=>{
+    try{
+      const bytes = encodeGIF(decodedFrames, resource.width, resource.height, resource.delay);
+      const blob = new Blob([bytes], {type:"image/gif"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "jieli-animation.gif";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+      log(`GIF saved: ${decodedFrames.length} frames, ${(bytes.length/1048576).toFixed(2)} MB`, "ok");
+    }catch(e){
+      log("GIF encode failed: " + (e?.message || String(e)), "warn");
+    }finally{
+      btn.disabled = false;
+    }
+  }, 10);
+};
+
 document.addEventListener("keydown", e=>{
   if(!decodedFrames.length) return;
   if(e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT")) return;
@@ -805,7 +919,6 @@ document.addEventListener("keydown", e=>{
   }
 });
 
-/* Fullscreen toggle for the whole app shell */
 const appEl = $("app");
 const fsBtn = $("fullscreenBtn");
 const fsIcon = $("fsIcon");
